@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python Debugger: Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/data",
+            "program": "${file}"
+        },
+        {
+            "name": "Python Debugger: Python File  -dry-run",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/data",
+            "program": "${file}",            
+            "args": [
+                "--dry-run"
+            ]
+
+        },
+        {
+            "name": "Python Debugger: Python File  -auth",
+            "type": "debugpy",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/data",
+            "program": "${file}",            
+            "args": [
+                "--auth", "rabbin.neiger"
+            ]
+
+        }
+
+
+    ]
+}
