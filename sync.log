@@ -1,0 +1,7 @@
+2026-03-19 00:48:18,449  INFO     Fetching vCards from https://nextcloud.beth-hillel.org/remote.php/dav/addressbooks/users/automate/bh-full/
+2026-03-19 00:48:19,949  INFO     Fetched 4666 vCards
+2026-03-19 00:48:19,949  INFO     ── Syncing to account: rabbin.neiger ──
+2026-03-19 00:48:19,950  ERROR    [rabbin.neiger] Token file not found: token_rabbin.neiger.json
+2026-03-19 00:48:19,953  ERROR    No valid token for account 'rabbin.neiger'. valid=None expired=None has_refresh=False has_token=False
+Run:  python /home/marc/projects/nc-contacts2google/nc-contacts2google.py --auth rabbin.neiger
+2026-03-19 00:48:19,953  INFO     ═══ Total across 1 account(s): +0  ~0  -0  skip=0  err=1 ═══

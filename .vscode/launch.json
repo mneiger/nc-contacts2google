@@ -7,7 +7,8 @@
             "type": "debugpy",
             "request": "launch",
             "cwd": "${workspaceFolder}/data",
-            "program": "${file}"
+            "program": "${file}",
+            "args" : [  "--config", "config.json" ],
         },
         {
             "name": "Python Debugger: Python File  -dry-run",
@@ -16,7 +17,7 @@
             "cwd": "${workspaceFolder}/data",
             "program": "${file}",            
             "args": [
-                "--dry-run"
+                "--dry-run", "--config", "config.json"
             ]
 
         },
@@ -27,7 +28,7 @@
             "cwd": "${workspaceFolder}/data",
             "program": "${file}",            
             "args": [
-                "--auth", "rabbin.neiger"
+                "--auth", "rabbin.neiger", "--config", "config.json"
             ]
 
         }

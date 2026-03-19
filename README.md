@@ -3,6 +3,9 @@
 One-way sync from Nextcloud (CardDAV) to one or several Google Workspace accounts
 using the **Google People API**.
 
+fait avec claude.ai
+https://claude.ai/chat/747aa386-6b66-4abe-8718-0690bfa58a4d
+
 ---
 
 ## How it works

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-carddav_google_sync.py
+nc-contacts2google.py
 ======================
 One-way sync: Nextcloud CardDAV  →  Google Contacts (People API)
 
@@ -29,10 +29,11 @@ once per account in a browser-capable session to complete the OAuth flow.
 
 Usage
 -----
-    python carddav_google_sync.py               # sync all configured accounts
-    python carddav_google_sync.py --auth alice  # (re-)authorize one account
-    python carddav_google_sync.py --dry-run     # show planned changes, no writes
-    python carddav_google_sync.py --account alice  # sync one account only
+    python nc-contacts2google.py               # sync all configured accounts
+    python nc-contacts2google.py --auth alice  # (re-)authorize one account
+    python nc-contacts2google.py --dry-run     # show planned changes, no writes
+    python nc-contacts2google.py --account alice  # sync one account only
+    python nc-contacts2google.py --config config-file  # sync one account only
 """
 
 import argparse
@@ -331,6 +332,10 @@ def _uid_from_href(href: str) -> str:
 
 def vcard_to_person(uid: str, vcard_text: str) -> Dict[str, Any]:
     """Convert a vCard string to a Google People API Person dict."""
+    def blank(val: str) -> bool:
+        """True if val is empty or a vCard placeholder dot."""
+        return not val or val.strip() in (".", "")    
+    
     try:
         vc = vobject.readOne(vcard_text)
     except Exception as exc:
@@ -340,22 +345,29 @@ def vcard_to_person(uid: str, vcard_text: str) -> Dict[str, Any]:
     person: Dict[str, Any] = {}
 
     # ── Name ──────────────────────────────────────────────────────────────────
+    name_obj: Dict[str, str] = {}
     if hasattr(vc, "n"):
         n = vc.n.value
-        name_obj: Dict[str, str] = {}
-        if n.family:    name_obj["familyName"]  = str(n.family)
-        if n.given:     name_obj["givenName"]   = str(n.given)
-        if n.additional:name_obj["middleName"]  = str(n.additional)
-        if n.prefix:    name_obj["honorificPrefix"] = str(n.prefix)
-        if n.suffix:    name_obj["honorificSuffix"] = str(n.suffix)
-        if name_obj:
-            person["names"] = [name_obj]
+        if not blank(n.family):  name_obj["familyName"]      = str(n.family)
+        if not blank(n.given):   name_obj["givenName"]       = str(n.given)
+        if not blank(n.additional): name_obj["middleName"]   = str(n.additional)
+        if not blank(n.prefix):  name_obj["honorificPrefix"] = str(n.prefix)
+        if not blank(n.suffix):  name_obj["honorificSuffix"] = str(n.suffix)
 
     if hasattr(vc, "fn") and vc.fn.value:
-        person.setdefault("names", [{}])
-        person["names"][0]["displayName"] = str(vc.fn.value)
-        if not person["names"][0].get("familyName") and not person["names"][0].get("givenName"):
-            person["names"][0]["unstructuredName"] = str(vc.fn.value)
+        name_obj["displayName"] = str(vc.fn.value)
+
+    # Only send the name object if it has at least one real field.
+    # If all we have is displayName, Google will reverse-engineer structured
+    # fields itself — don't send anything and let Google keep what it built.
+    STRUCTURED_NAME_KEYS = {"familyName", "givenName", "middleName",
+                            "honorificPrefix", "honorificSuffix"}
+    has_structured = any(k in name_obj for k in STRUCTURED_NAME_KEYS)
+    if has_structured:
+        person["names"] = [name_obj]
+    elif "displayName" in name_obj:
+        # Send only displayName — Google will fill in the rest
+        person["names"] = [{"displayName": name_obj["displayName"]}]
 
     # ── Nickname ──────────────────────────────────────────────────────────────
     if hasattr(vc, "nickname") and vc.nickname.value:
@@ -387,16 +399,14 @@ def vcard_to_person(uid: str, vcard_text: str) -> Dict[str, Any]:
 
     # ── Organisation ─────────────────────────────────────────────────────────
     if hasattr(vc, "org"):
-        org_val = vc.org.value
+        org_val  = vc.org.value
         org_name = str(org_val[0]) if isinstance(org_val, (list, tuple)) and org_val else str(org_val)
-        dept = str(org_val[1]) if isinstance(org_val, (list, tuple)) and len(org_val) > 1 else ""
-        title = str(vc.title.value) if hasattr(vc, "title") else ""
-        person["organizations"] = [{
-            "name":       org_name,
-            "department": dept,
-            "title":      title,
-            "type":       "work",
-        }]
+        dept     = str(org_val[1]) if isinstance(org_val, (list, tuple)) and len(org_val) > 1 else ""
+        title    = str(vc.title.value) if hasattr(vc, "title") else ""
+        org_obj  = {"name": org_name, "type": "work"}
+        if dept:  org_obj["department"] = dept
+        if title: org_obj["title"]      = title
+        person["organizations"] = [org_obj]
     elif hasattr(vc, "title"):
         person["organizations"] = [{"title": str(vc.title.value)}]
 
@@ -417,19 +427,6 @@ def vcard_to_person(uid: str, vcard_text: str) -> Dict[str, Any]:
             addresses.append(addr_obj)
     if addresses:
         person["addresses"] = addresses
-
-    # ── Birthday ──────────────────────────────────────────────────────────────
-    if hasattr(vc, "bday") and vc.bday.value:
-        bday_str = str(vc.bday.value).replace("-", "")
-        try:
-            if len(bday_str) == 8:
-                d = datetime.strptime(bday_str, "%Y%m%d")
-                person["birthdays"] = [{"date": {"year": d.year, "month": d.month, "day": d.day}}]
-            elif len(bday_str) == 4:  # --MMDD format (no year)
-                d = datetime.strptime(bday_str[2:], "%m%d")
-                person["birthdays"] = [{"date": {"month": d.month, "day": d.day}}]
-        except ValueError:
-            pass
 
     # ── URLs ──────────────────────────────────────────────────────────────────
     urls = []
@@ -627,32 +624,89 @@ def _extract_nc_uid(person: Dict) -> Optional[str]:
 
 def persons_differ(new_p: Dict, existing_p: Dict) -> bool:
     """
-    Lightweight field-level diff.  Returns True if the new person data differs
-    from what is already in Google (ignoring read-only metadata fields).
+    Field-level diff ignoring Google-computed/derived fields that are never
+    present in the source vCard data.
     """
+
+    # Fields Google adds automatically that we never send
+    IGNORE_KEYS = {
+        # Name derived fields
+        "displayName", "displayNameLastFirst", "unstructuredName",
+        "phoneticFullName", "phoneticFamilyName", "phoneticGivenName",
+        "phoneticMiddleName", "phoneticHonorificPrefix", "phoneticHonorificSuffix",
+        # Common metadata/computed fields present on every sub-object
+        "metadata", "formattedValue", "formattedType", "canonicalForm",
+        # Address derived fields
+        "formattedAddress",
+        # Organisation derived fields
+        "formattedName",
+        # Birthday derived fields
+        "text",
+        # Phone derived fields
+        "nationalNumber",
+    }
+
+    def clean(obj):
+        """Recursively strip ignored keys and empty string values."""
+        if isinstance(obj, dict):
+            return {
+                k: clean(v)
+                for k, v in obj.items()
+                if k not in IGNORE_KEYS and v != "" and v is not None
+            }
+        if isinstance(obj, list):
+            return [clean(i) for i in obj]
+        return obj
+
+    def normalise_list(lst):
+        """Clean and sort a list of dicts so order differences don't matter."""
+        if not lst:
+            return []
+        cleaned = [clean(item) for item in lst]
+        # Sort by JSON representation so order doesn't cause false positives
+        return sorted(cleaned, key=lambda x: json.dumps(x, sort_keys=True))
+
     COMPARE_FIELDS = [
         "names", "phoneNumbers", "emailAddresses", "organizations",
-        "addresses", "birthdays", "urls", "nicknames",
+        "addresses", "urls", "nicknames",
     ]
+
+    STRUCTURED_NAME_KEYS = {"familyName", "givenName", "middleName",
+                            "honorificPrefix", "honorificSuffix"}
+
     for f in COMPARE_FIELDS:
-        def normalise(lst):
-            cleaned = []
-            for item in (lst or []):
-                item = {k: v for k, v in item.items()
-                        if k not in ("metadata", "formattedValue", "formattedType",
-                                     "canonicalForm", "displayName")}
-                cleaned.append(item)
-            return cleaned
+        new_val = normalise_list(new_p.get(f))
+        ex_val  = normalise_list(existing_p.get(f))
 
-        if normalise(new_p.get(f)) != normalise(existing_p.get(f)):
-            return True
+        # Special case: if source has no structured name fields, Google will
+        # have reverse-engineered them — skip comparison to avoid false positives
+        if f == "names":
+            new_has_structured = any(
+                any(k in item for k in STRUCTURED_NAME_KEYS)
+                for item in (new_p.get("names") or [])
+            )
+            if not new_has_structured:
+                continue
+            # Only compare the primary (most complete) name entry, not
+            # Google-synthesised alternates
+            new_val = normalise_list(new_p.get("names") or [])[:1]
+            ex_val  = normalise_list(existing_p.get("names") or [])[:1]
+            if new_val != ex_val:
+                log.debug("persons_differ: field 'names' changed\n  new=%s\n  old=%s",
+                          f, json.dumps(new_val), json.dumps(ex_val))
+            return new_val != ex_val
+    # Compare biography text, excluding the UID tag line
+    def bio_lines(p):
+        lines = []
+        for b in p.get("biographies", []):
+            for line in b.get("value", "").splitlines():
+                if not line.startswith(UID_PREFIX):
+                    lines.append(line.strip())
+        return sorted(filter(None, lines))
 
-    # Compare notes except the UID line
-    def bio_text(p):
-        return [b["value"] for b in p.get("biographies", [])
-                if not b.get("value", "").startswith(UID_PREFIX)]
-
-    if bio_text(new_p) != bio_text(existing_p):
+    if bio_lines(new_p) != bio_lines(existing_p):
+        log.debug("persons_differ: biographies changed\n  new=%s\n  old=%s",
+                  bio_lines(new_p), bio_lines(existing_p))
         return True
 
     return False
