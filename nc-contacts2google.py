@@ -52,6 +52,7 @@ import requests
 import vobject
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account as _sa
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -70,23 +71,20 @@ CONFIG = {
         "verify_ssl":   True,   # set False only for self-signed certs (not recommended)
     },
 
-    # ── Google OAuth2 app credentials ─────────────────────────────────────────
-    # Download from Google Cloud Console → APIs & Services → Credentials
-    "google_oauth_client_file": "client_secret.json",
-
     # ── Google accounts to sync TO ────────────────────────────────────────────
-    # Add one entry per account.  token_file is created automatically on first
-    # --auth run and reused on subsequent runs.
+    # auth_method: "oauth"            → per-user OAuth2 (Gmail or Workspace)
+    # auth_method: "service_account"  → domain-wide delegation (Workspace only)
+    # Download from Google Cloud Console → APIs & Services → Credentials
+    "google_oauth_client_file": "client_secret.json",   # used by oauth accounts
+    "service_account_file":     "service_account.json", # used by service_account accounts
+
     "google_accounts": [
-        {
-            "name":       "alice",
-            "token_file": "token_alice.json",
-        },
-        {
-            "name":       "bob",
-            "token_file": "token_bob.json",
-        },
-        # Add more accounts here …
+        # Workspace users via service account (no browser/token needed)
+        {"name": "alice@yourorg.org", "auth_method": "service_account"},
+        {"name": "bob@yourorg.org",   "auth_method": "service_account"},
+        # Personal Gmail or extra accounts via OAuth
+        {"name": "carol@gmail.com",   "auth_method": "oauth", "token_file": "tokens/token_carol.json"},
+        {"name": "dave@gmail.com",    "auth_method": "oauth", "token_file": "tokens/token_dave.json"},
     ],
 
     # ── Sync behaviour ────────────────────────────────────────────────────────
@@ -104,52 +102,6 @@ CONFIG = {
     # Log file path (set to None to log to stdout only)
     "log_file": "sync.log",
 }
-
-CONFIG = {
-    # ── Nextcloud / CardDAV source ────────────────────────────────────────────
-    "carddav": {
-        "url":          "https://nextcloud.beth-hillel.org/remote.php/dav/addressbooks/users/automate/bh-full/",
-        "username":     "automate",
-        # Use an app-password (Settings → Security → Devices & sessions)
-        "password":     "FB4ix-zaRxb-i2YEj-yNeFQ-xPz5s",
-        "verify_ssl":   True,   # set False only for self-signed certs (not recommended)
-    },
-
-    # ── Google OAuth2 app credentials ─────────────────────────────────────────
-    # Download from Google Cloud Console → APIs & Services → Credentials
-    "google_oauth_client_file": "client_secret.json",
-
-    # ── Google accounts to sync TO ────────────────────────────────────────────
-    # Add one entry per account.  token_file is created automatically on first
-    # --auth run and reused on subsequent runs.
-    "google_accounts": [
-        {
-            "name":       "rabbin.neiger",
-            "token_file": "token_rabbin.neiger.json",
-        },
-#        {
-#            "name":       "bob",
-#            "token_file": "token_bob.json",
-#        },
-        # Add more accounts here …
-    ],
-
-    # ── Sync behaviour ────────────────────────────────────────────────────────
-    # Label/group name created in each Google account to hold synced contacts.
-    # All managed contacts are placed in this group; contacts outside it are
-    # never touched.
-    "contact_group_name": "NextcloudSync",
-
-    # If True, contacts deleted from Nextcloud will also be deleted in Google.
-    "sync_deletes": True,
-
-    # Seconds to sleep between batch API calls to stay within rate limits.
-    "batch_sleep": 5.0,
-
-    # Log file path (set to None to log to stdout only)
-    "log_file": "sync.log",
-}
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -466,72 +418,96 @@ def _map_email_type(types: List[str]) -> str:
 # Google OAuth
 # ──────────────────────────────────────────────────────────────────────────────
 
-def get_google_service(account: dict, client_file: str):
-    """Return an authenticated People API service for one account."""
-    token_path = account["token_file"]
-    creds: Optional[Credentials] = None
+def get_google_service(account: dict, cfg: dict):
+    """Return an authenticated People API service for one account.
+    Supports two auth methods controlled by account['auth_method']:
+      'oauth'           – per-user OAuth2 token (Gmail or Workspace)
+      'service_account' – domain-wide delegation via service account (Workspace only)
+    """
+    method = account.get("auth_method", "oauth")
 
-    if os.path.exists(token_path):
-        try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-            log.debug("[%s] Token loaded. valid=%s expired=%s has_refresh=%s has_token=%s",
-                      account["name"], creds.valid, creds.expired,
-                      bool(creds.refresh_token), bool(creds.token))
-        except Exception as exc:
-            log.error("[%s] Failed to load token file %s: %s", account["name"], token_path, exc)
-            creds = None
-    else:
-        log.error("[%s] Token file not found: %s", account["name"], token_path)
-
-    if not creds or not creds.valid:
-        if creds and creds.refresh_token and (creds.expired or not creds.token):
-            log.info("[%s] Refreshing OAuth token", account["name"])
-            try:
-                creds.refresh(Request())
-                _save_token(creds, token_path)
-            except Exception as exc:
-                log.error("[%s] Token refresh failed: %s", account["name"], exc)
-                raise RuntimeError(
-                    f"Token refresh failed for '{account['name']}': {exc}\n"
-                    f"Re-run:  python {sys.argv[0]} --auth {account['name']}"
-                )
-        else:
+    # ── Service account (domain-wide delegation) ──────────────────────────────
+    if method == "service_account":
+        sa_file = cfg.get("service_account_file", "service_account.json")
+        if not os.path.exists(sa_file):
             raise RuntimeError(
-                f"No valid token for account '{account['name']}'. "
-                f"valid={getattr(creds,'valid',None)} "
-                f"expired={getattr(creds,'expired',None)} "
-                f"has_refresh={bool(getattr(creds,'refresh_token',None))} "
-                f"has_token={bool(getattr(creds,'token',None))}\n"
-                f"Run:  python {sys.argv[0]} --auth {account['name']}"
+                f"Service account file not found: {sa_file}"
             )
+        log.debug("[%s] Authenticating via service account (%s)", account["name"], sa_file)
+        credentials = _sa.Credentials.from_service_account_file(
+            sa_file,
+            scopes=SCOPES,
+        ).with_subject(account["name"])
+        return build("people", "v1", credentials=credentials, cache_discovery=False)
 
-    _save_token(creds, token_path)
-    return build("people", "v1", credentials=creds, cache_discovery=False)
+    # ── OAuth2 per-user token ─────────────────────────────────────────────────
+    if method == "oauth":
+        token_path = account.get("token_file")
+        if not token_path:
+            raise RuntimeError(
+                f"Account '{account['name']}' uses auth_method='oauth' but has no 'token_file' set."
+            )
+        creds: Optional[Credentials] = None
 
-def authorize_account_old(account: dict, client_file: str):
-    """Interactive browser OAuth flow — run once per account."""
-    flow = InstalledAppFlow.from_client_secrets_file(client_file, SCOPES)
-    creds = flow.run_local_server(port=0)
-    _save_token(creds, account["token_file"])
-    log.info("[%s] Authorization complete. Token saved to %s",
-             account["name"], account["token_file"])
+        if os.path.exists(token_path):
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+                log.debug("[%s] Token loaded. valid=%s expired=%s has_refresh=%s has_token=%s",
+                          account["name"], creds.valid, creds.expired,
+                          bool(creds.refresh_token), bool(creds.token))
+            except Exception as exc:
+                log.error("[%s] Failed to load token file %s: %s", account["name"], token_path, exc)
+                creds = None
+        else:
+            log.error("[%s] Token file not found: %s", account["name"], token_path)
 
+        if not creds or not creds.valid:
+            if creds and creds.refresh_token and (creds.expired or not creds.token):
+                log.info("[%s] Refreshing OAuth token", account["name"])
+                try:
+                    creds.refresh(Request())
+                    _save_token(creds, token_path)
+                except Exception as exc:
+                    log.error("[%s] Token refresh failed: %s", account["name"], exc)
+                    raise RuntimeError(
+                        f"Token refresh failed for '{account['name']}': {exc}\n"
+                        f"Re-run:  python {sys.argv[0]} --auth {account['name']}"
+                    )
+            else:
+                raise RuntimeError(
+                    f"No valid token for account '{account['name']}'. "
+                    f"valid={getattr(creds,'valid',None)} "
+                    f"expired={getattr(creds,'expired',None)} "
+                    f"has_refresh={bool(getattr(creds,'refresh_token',None))} "
+                    f"has_token={bool(getattr(creds,'token',None))}\n"
+                    f"Run:  python {sys.argv[0]} --auth {account['name']}"
+                )
+
+        _save_token(creds, token_path)
+        return build("people", "v1", credentials=creds, cache_discovery=False)
+
+    raise RuntimeError(
+        f"Unknown auth_method '{method}' for account '{account['name']}'. "
+        f"Use 'oauth' or 'service_account'."
+    )
 
 def authorize_account(account: dict, client_file: str):
-    """Interactive browser OAuth flow — run once per account."""
+    """Interactive browser OAuth flow — only valid for auth_method='oauth'."""
+    method = account.get("auth_method", "oauth")
+    if method != "oauth":
+        raise RuntimeError(
+            f"Account '{account['name']}' uses auth_method='{method}'. "
+            f"--auth is only needed for oauth accounts."
+        )
     flow = InstalledAppFlow.from_client_secrets_file(client_file, SCOPES)
     creds = flow.run_local_server(port=0)
-
-    # Force an immediate refresh so creds.token is populated
-    # (right after OAuth flow, token may be None even with a valid refresh_token)
     if not creds.token:
         log.info("[%s] Fetching initial access token …", account["name"])
         creds.refresh(Request())
-
     _save_token(creds, account["token_file"])
     log.info("[%s] Authorization complete. Token saved to %s",
              account["name"], account["token_file"])
-    
+
 
 def _save_token(creds: Credentials, path: str):
     import json as _json
@@ -736,7 +712,7 @@ def sync_to_account(
     log.info("── Syncing to account: %s ──", name)
 
     try:
-        service = get_google_service(account, cfg["google_oauth_client_file"])
+        service = get_google_service(account, cfg)
     except RuntimeError as exc:
         log.error(exc)
         stats.errors += 1
