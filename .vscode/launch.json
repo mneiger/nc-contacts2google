@@ -3,12 +3,12 @@
     "configurations": [
 
         {
-            "name": "Python Debugger: Python File",
+            "name": "Python Debugger: Python File srv1",
             "type": "debugpy",
             "request": "launch",
-            "cwd": "${workspaceFolder}/data",
+            "cwd": "${workspaceFolder}/data.srv1",
             "program": "${file}",
-            "args" : [  "--config", "config.json" ],
+            "args" : [  "--config", "config.json", "--account", "catherine.dn@beth-hillel.org"],
         },
         {
             "name": "Python Debugger: Python File  -dry-run",
