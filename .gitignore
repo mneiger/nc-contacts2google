@@ -1,3 +1,10 @@
 data/
 neiger/
 BH/
+venv/
+__pycache__/
+*.pyc
+data/token_*.json
+data/people_api_discovery.json
+*.log
+

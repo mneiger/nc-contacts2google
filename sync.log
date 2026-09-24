@@ -5,3 +5,6 @@
 2026-03-19 00:48:19,953  ERROR    No valid token for account 'rabbin.neiger'. valid=None expired=None has_refresh=False has_token=False
 Run:  python /home/marc/projects/nc-contacts2google/nc-contacts2google.py --auth rabbin.neiger
 2026-03-19 00:48:19,953  INFO     ═══ Total across 1 account(s): +0  ~0  -0  skip=0  err=1 ═══
+2026-09-25 01:05:32,815  INFO     Fetching vCards from https://your-nextcloud.example.org/remote.php/dav/addressbooks/users/YOUR_USER/contacts/
+2026-09-25 01:07:22,454  ERROR    Unknown account 'rabbin.neiger@beth-hillel.org'
+2026-09-25 01:07:26,432  ERROR    Unknown account 'rabbin.neiger'
