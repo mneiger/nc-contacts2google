@@ -1,14 +1,9 @@
 data/
 neiger/
 BH/
-<<<<<<< HEAD
 venv/
 __pycache__/
 *.pyc
 data/token_*.json
 data/people_api_discovery.json
 *.log
-
-=======
-data.srv1/
->>>>>>> refs/remotes/origin/main
